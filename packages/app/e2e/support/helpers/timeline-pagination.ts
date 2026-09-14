@@ -40,12 +40,6 @@ interface TimelineViewportSnapshot {
   scrollTop: number;
 }
 
-interface PersistedCanonicalTimelineRange {
-  epoch: string;
-  startSeq: number;
-  endSeq: number;
-}
-
 export interface TimelinePresentationSnapshot {
   marker: string;
   position: TimelinePromptPositionSnapshot;
@@ -55,11 +49,6 @@ export interface TimelinePresentationSnapshot {
 interface TimelinePromptPositionSnapshot {
   prompt: string;
   top: number;
-}
-
-interface OlderHistoryLoadingOperation {
-  animationStartTime: number | null;
-  marker: string;
 }
 
 interface OlderHistoryPages {
@@ -304,34 +293,6 @@ export async function reloadAgentTimelineFromPersistedReplica(
   await expectTimelinePromptVisible(page, agent.newestPrompt);
 }
 
-export async function waitForPersistedCanonicalTimelineRange(
-  page: Page,
-  agentId: string,
-): Promise<PersistedCanonicalTimelineRange> {
-  const readRange = async () => {
-    const cache = await readReplicaCache(page);
-    if (cache?.version !== 6) return null;
-    const range = cache.hosts
-      ?.flatMap((host) => host.timelines)
-      .find((timeline) => timeline.agentId === agentId)?.range;
-    if (
-      typeof range?.epoch !== "string" ||
-      typeof range.startSeq !== "number" ||
-      typeof range.endSeq !== "number"
-    ) {
-      return null;
-    }
-    return { epoch: range.epoch, startSeq: range.startSeq, endSeq: range.endSeq };
-  };
-
-  await expect.poll(readRange).not.toBeNull();
-  const range = await readRange();
-  if (!range) {
-    throw new Error(`Persisted canonical timeline range is missing for ${agentId}`);
-  }
-  return range;
-}
-
 export async function holdNextOlderTimelinePage(
   page: Page,
   agent: LongTimelineAgent,
@@ -455,49 +416,6 @@ export async function expectTimelineViewportAnchoredAfterPrepend(
   const contentGrowth = after.scrollHeight - before.scrollHeight;
   const scrollAdjustment = after.scrollTop - before.scrollTop;
   expect(Math.abs(contentGrowth - scrollAdjustment)).toBeLessThanOrEqual(2);
-}
-
-export async function rememberOlderHistoryLoadingOperation(
-  page: Page,
-): Promise<OlderHistoryLoadingOperation> {
-  const slot = page.getByTestId("load-older-history-spinner");
-  await expect(slot).toBeVisible();
-  const marker = `older-history-loading-${Date.now()}`;
-  await slot.evaluate((element, operationMarker) => {
-    const candidates = [element, ...Array.from(element.querySelectorAll("*"))];
-    const animated = candidates.find(
-      (candidate) => getComputedStyle(candidate).animationName !== "none",
-    );
-    if (!(animated instanceof HTMLElement)) {
-      throw new Error("Expected the older-history loader to contain an animated element");
-    }
-    animated.dataset.olderHistoryLoadingOperation = operationMarker;
-  }, marker);
-  const animated = page.locator(`[data-older-history-loading-operation="${marker}"]`);
-  await expect
-    .poll(async () => {
-      const startTime = await animated.evaluate((element) => element.getAnimations()[0]?.startTime);
-      return typeof startTime === "number" ? startTime : null;
-    })
-    .not.toBeNull();
-  const animationStartTime = await animated.evaluate((element) => {
-    const startTime = element.getAnimations()[0]?.startTime;
-    return typeof startTime === "number" ? startTime : null;
-  });
-  return { animationStartTime, marker };
-}
-
-export async function expectSameOlderHistoryLoadingOperation(
-  page: Page,
-  operation: OlderHistoryLoadingOperation,
-): Promise<void> {
-  const animated = page.locator(`[data-older-history-loading-operation="${operation.marker}"]`);
-  await expect(animated).toBeVisible();
-  const animationStartTime = await animated.evaluate((element) => {
-    const startTime = element.getAnimations()[0]?.startTime;
-    return typeof startTime === "number" ? startTime : null;
-  });
-  expect(animationStartTime).toBe(operation.animationStartTime);
 }
 
 export async function expectTimelineAtHistoryStart(page: Page): Promise<void> {

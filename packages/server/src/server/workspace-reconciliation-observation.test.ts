@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, watch as watchPath } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ProjectCheckoutLitePayload } from "@getpaseo/protocol/messages";
@@ -28,6 +28,52 @@ const cleanupPaths: string[] = [];
 
 afterEach(() => {
   for (const target of cleanupPaths.splice(0)) rmSync(target, { recursive: true, force: true });
+});
+
+test("disposal releases a real project root watch before its directory is removed", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "project-watch-close-"));
+  cleanupPaths.push(root);
+  const logger = createTestLogger();
+  const projects = new FileBackedProjectRegistry(path.join(root, "projects.json"), logger);
+  const workspaces = new FileBackedWorkspaceRegistry(path.join(root, "workspaces.json"), logger);
+  await projects.initialize();
+  await workspaces.initialize();
+  await projects.upsert(
+    createPersistedProjectRecord({
+      projectId: "project-watch-close",
+      rootPath: root,
+      kind: "non_git",
+      displayName: "root watch",
+      createdAt: TIMESTAMP,
+      updatedAt: TIMESTAMP,
+    }),
+  );
+  let released = false;
+  const service = new WorkspaceReconciliationService({
+    projectRegistry: projects,
+    workspaceRegistry: workspaces,
+    logger,
+    watchProjectRoot: (rootPath, options, onChange, onError) => {
+      const watcher = watchPath(rootPath, options, onChange);
+      watcher.on("error", onError);
+      const closed = new Promise<void>((resolve) =>
+        watcher.once("close", () => {
+          released = true;
+          resolve();
+        }),
+      );
+      return {
+        close: () => {
+          watcher.close();
+          return closed;
+        },
+      };
+    },
+  });
+  await service.start();
+  await service.dispose();
+  expect(released).toBe(true);
+  rmSync(root, { recursive: true });
 });
 
 interface ProjectSpec {
@@ -188,7 +234,11 @@ class ObservedPlacements {
       const watch = { rootPath, onChange, onError, closed: false };
       this.watches.push(watch);
       this.lifecycleEvents.push(`watch installed:${path.relative(this.home, rootPath)}`);
-      return { close: () => (watch.closed = true) };
+      return {
+        close: async () => {
+          watch.closed = true;
+        },
+      };
     };
     this.service = new WorkspaceReconciliationService({
       projectRegistry: this.projects,
@@ -277,8 +327,8 @@ class ObservedPlacements {
     await this.clock.advanceBy(elapsedMs);
   }
 
-  dispose(): void {
-    this.service.dispose();
+  async dispose(): Promise<void> {
+    await this.service.dispose();
   }
 
   watchedRoots(): string[] {
@@ -407,7 +457,7 @@ describe("observed workspace placement", () => {
       "registry mutation resolved:project-new",
     ]);
     expect(observed.gitReads).toBe(0);
-    observed.dispose();
+    await observed.dispose();
   });
 
   test("deduplicates active root watches and tears them down on archive and remove", async () => {
@@ -434,7 +484,7 @@ describe("observed workspace placement", () => {
       { kind: "remove", projectId: "project-duplicate" },
       { kind: "remove", projectId: "project-remove" },
     ]);
-    observed.dispose();
+    await observed.dispose();
   });
 
   test("filters unrelated files and coalesces Git change bursts", async () => {
@@ -450,7 +500,7 @@ describe("observed workspace placement", () => {
     observed.change("repo", null);
     await observed.advanceBy(DEBOUNCE_MS);
     expect(observed.gitReads).toBe(1);
-    observed.dispose();
+    await observed.dispose();
   });
 
   test("recovers errored and temporarily unavailable watchers on the periodic pass", async () => {
@@ -468,7 +518,7 @@ describe("observed workspace placement", () => {
 
     expect(observed.watchedRoots()).toEqual(["errored", "unavailable"]);
     expect(observed.closedRoots()).toEqual(["errored"]);
-    observed.dispose();
+    await observed.dispose();
   });
 
   test("archives missing workspace directories on the periodic pass", async () => {
@@ -482,7 +532,7 @@ describe("observed workspace placement", () => {
 
     expect((await observed.placement("workspace-one"))?.archivedAt).toEqual(expect.any(String));
     expect(observed.workspaceBatches).toEqual([["workspace-one"]]);
-    observed.dispose();
+    await observed.dispose();
   });
 
   test("preserves a periodic full pass queued behind metadata reconciliation", async () => {
@@ -504,7 +554,7 @@ describe("observed workspace placement", () => {
 
     expect((await observed.placement("workspace-one"))?.archivedAt).toEqual(expect.any(String));
     expect(observed.workspaceBatches).toEqual([["workspace-one"]]);
-    observed.dispose();
+    await observed.dispose();
   });
 
   test("contains a failed reconciliation and converges on the next change", async () => {
@@ -526,7 +576,7 @@ describe("observed workspace placement", () => {
       branch: "main",
       displayName: "Durable workspace-one",
     });
-    observed.dispose();
+    await observed.dispose();
   });
 
   test("deduplicates direct placement and project-derived workspace fanout", async () => {
@@ -549,7 +599,7 @@ describe("observed workspace placement", () => {
     expect(observed.projectUpdates).toHaveLength(1);
     expect(observed.workspaceBatches).toEqual([["workspace-one", "workspace-two"]]);
     expect(new Set(observed.workspaceBatches[0]).size).toBe(2);
-    observed.dispose();
+    await observed.dispose();
   });
 
   test("disposal suppresses in-flight mutations and reconciliation fanout", async () => {
@@ -558,7 +608,7 @@ describe("observed workspace placement", () => {
     const registryRead = mutation.holdNextRegistryRead();
     const adding = mutation.add({ id: "project-late", root: "late" });
     await registryRead.started;
-    mutation.dispose();
+    await mutation.dispose();
     registryRead.release();
     await adding;
     expect(mutation.projectUpdates).toEqual([]);
@@ -573,7 +623,7 @@ describe("observed workspace placement", () => {
     reconciliation.change("repo", ".git");
     const advancing = reconciliation.advanceBy(DEBOUNCE_MS);
     await workspaceRead.started;
-    reconciliation.dispose();
+    await reconciliation.dispose();
     workspaceRead.release();
     await advancing;
 

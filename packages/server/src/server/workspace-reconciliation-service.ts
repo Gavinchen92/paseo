@@ -25,7 +25,7 @@ export type ProjectUpdate =
   | { kind: "remove"; projectId: string };
 
 interface ProjectRootWatcher {
-  close(): void;
+  close(): Promise<void>;
 }
 
 export interface ProjectRootWatch {
@@ -58,7 +58,13 @@ const systemClock: ReconciliationClock = {
 const watchProjectRoot: ProjectRootWatch = (rootPath, options, onChange, onError) => {
   const watcher = watchPath(rootPath, options, onChange);
   watcher.on("error", onError);
-  return watcher;
+  const closed = new Promise<void>((resolve) => watcher.once("close", resolve));
+  return {
+    close() {
+      watcher.close();
+      return closed;
+    },
+  };
 };
 
 export type ReconciliationChange =
@@ -178,14 +184,15 @@ export class WorkspaceReconciliationService {
     this.rescanTimer.unref?.();
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.disposed = true;
     this.unsubscribeRegistry?.();
     this.unsubscribeRegistry = null;
     if (this.rescanTimer) this.clock.clearInterval(this.rescanTimer);
     if (this.debounceTimer) this.clock.clearTimeout(this.debounceTimer);
-    for (const { watcher } of this.watchers) watcher.close();
+    const closing = this.watchers.map(({ watcher }) => watcher.close());
     this.watchers.length = 0;
+    await Promise.all(closing);
   }
 
   /** Reconciles mutable Git facts only; never archives missing records. */
@@ -413,7 +420,7 @@ export class WorkspaceReconciliationService {
         areEquivalentPaths(project.rootPath, target.rootPath),
       );
       if (stillActive) continue;
-      target.watcher.close();
+      void target.watcher.close();
       this.watchers.splice(index, 1);
     }
 
@@ -433,7 +440,7 @@ export class WorkspaceReconciliationService {
             }
           },
           (error) => {
-            watcher.close();
+            void watcher.close();
             const index = this.watchers.findIndex((target) => target.watcher === watcher);
             if (index >= 0) this.watchers.splice(index, 1);
             this.logger.warn(
