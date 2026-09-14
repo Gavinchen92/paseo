@@ -281,11 +281,13 @@ test("browser and desktop tests have exclusive, directory-owned suites", () => {
   ]);
 });
 
-test("non-required Docker and Nix workflows avoid runners with workflow path filters", () => {
-  for (const workflowPath of [dockerWorkflowPath, nixWorkflowPath]) {
+test("packaging runs on main without allocating pull-request runners", () => {
+  const desktopPackagesPath = new URL(".github/workflows/desktop-packages.yml", repoRoot);
+  for (const workflowPath of [dockerWorkflowPath, nixWorkflowPath, desktopPackagesPath]) {
     const source = readFileSync(workflowPath, "utf8");
     const trigger = source.split("jobs:", 1)[0];
-    assert.match(trigger, /^\s+paths:\s*$/m);
+    assert.match(trigger, /push:\s*\n\s+branches: \[main\]/);
+    assert.doesNotMatch(trigger, /pull_request/);
     assert.doesNotMatch(source, /dorny\/paths-filter/);
   }
 });
