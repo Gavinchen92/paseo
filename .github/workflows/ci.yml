@@ -360,7 +360,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           # Weight file groups by observed duration; raw test counts overload
           # early agent/Changes specs. Required check names remain unchanged.
-          PWTEST_SHARD_WEIGHTS: "111:170:137:160"
+          PWTEST_SHARD_WEIGHTS: "111:172:137:160"
 
       - name: Upload test artifacts
         uses: actions/upload-artifact@v4
