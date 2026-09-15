@@ -1255,6 +1255,12 @@ export class DaemonClient {
     if (this.connectionState.status === "connecting") {
       return;
     }
+    // This attempt supersedes any retry the last disconnect scheduled. Left
+    // armed, that retry would tear down the connection this attempt opens.
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
 
     const headers: Record<string, string> = {};
     const password = normalizePassword(this.config.password);
@@ -1463,10 +1469,6 @@ export class DaemonClient {
       this.connectionState.status === "connecting"
     ) {
       return;
-    }
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-      this.reconnectTimeout = null;
     }
     if (this.connectPromise) {
       this.attemptConnect();
