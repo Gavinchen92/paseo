@@ -6,7 +6,6 @@ import {
   expectRunningAgentChrome,
   expectTurnCopyButton,
   expectScrollFollowsNewContent,
-  observeCompletedMarkdownBlock,
 } from "../support/helpers/agent-stream";
 import {
   expectScrollStaysFixed,
@@ -17,6 +16,17 @@ import {
   waitForScrollableChat,
 } from "../support/helpers/agent-bottom-anchor";
 import { delayCreatedAgentInitialTailResponse } from "../support/helpers/agent-timeline-gate";
+import {
+  collapseSettledWord,
+  installMarkdownRootObserver,
+  mountObservedSyntheticBlock,
+  readMarkdownRootEvidence,
+  replaceParagraph,
+  replaceParagraphKeepingFadingWord,
+  restartFadingWord,
+  resumeFadingWord,
+  settleMarkdownRootObserver,
+} from "../support/helpers/markdown-root-stability";
 import { selectModel } from "../support/helpers/app";
 import { clickNewChat } from "../support/helpers/launcher";
 import { expectComposerVisible, startRunningMockAgent } from "../support/helpers/composer";
@@ -49,9 +59,7 @@ test.describe("Agent stream UI", () => {
     }
   });
 
-  test("auto-scroll follows token bursts while streamed Markdown grows in place", async ({
-    page,
-  }) => {
+  test("auto-scroll sticks to bottom across token bursts", async ({ page }) => {
     test.setTimeout(120_000);
     const agent = await startRunningMockAgent(page, {
       prefix: "stream-scroll-",
@@ -59,18 +67,115 @@ test.describe("Agent stream UI", () => {
       prompt: "Stream for auto-scroll test.",
     });
     try {
-      await awaitAssistantMessage(page, "walking through");
+      await awaitAssistantMessage(page);
       await expectScrollFollowsNewContent(page);
+    } finally {
+      await agent.cleanup();
+    }
+  });
 
-      await test.step("a completed block stays mounted while later blocks stream", async () => {
-        await awaitAssistantMessage(page, "Now I have a clearer picture");
-        const intro = page
-          .getByTestId("assistant-message")
-          .filter({ hasText: "walking through" })
-          .first();
-        const block = await observeCompletedMarkdownBlock(page, intro);
-        await block.expectLaterStreamKeepsMounted();
+  test("the Markdown root observer tells designed fade churn from replacements", async ({
+    page,
+  }) => {
+    await test.step("a word re-created with its start time resumes its fade", async () => {
+      await mountObservedSyntheticBlock(page);
+      await resumeFadingWord(page);
+      expect(await readMarkdownRootEvidence(page)).toEqual({
+        replacedElements: 0,
+        restartedFades: 0,
       });
+    });
+
+    await test.step("a word re-created with a new start time is a restarted fade", async () => {
+      await mountObservedSyntheticBlock(page);
+      await restartFadingWord(page);
+      expect(await readMarkdownRootEvidence(page)).toEqual({
+        replacedElements: 0,
+        restartedFades: 1,
+      });
+    });
+
+    await test.step("a settled word collapsing into text is not a replacement", async () => {
+      await mountObservedSyntheticBlock(page);
+      await collapseSettledWord(page);
+      expect(await readMarkdownRootEvidence(page)).toEqual({
+        replacedElements: 0,
+        restartedFades: 0,
+      });
+    });
+
+    await test.step("a re-created paragraph is a replaced element", async () => {
+      await mountObservedSyntheticBlock(page);
+      await replaceParagraph(page);
+      expect(await readMarkdownRootEvidence(page)).toEqual({
+        replacedElements: 1,
+        restartedFades: 0,
+      });
+    });
+
+    await test.step("a re-created paragraph is still a replacement when it keeps its fading word", async () => {
+      await mountObservedSyntheticBlock(page);
+      await replaceParagraphKeepingFadingWord(page);
+      expect(await readMarkdownRootEvidence(page)).toEqual({
+        replacedElements: 1,
+        restartedFades: 0,
+      });
+    });
+  });
+
+  test("keeps the active Markdown root mounted across streamed text updates", async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(120_000);
+    const agent = await startRunningMockAgent(page, {
+      prefix: "stream-markdown-root-",
+      model: "one-minute-stream",
+      prompt: "Stream for Markdown root stability test.",
+    });
+    try {
+      const assistantMessage = page.getByTestId("assistant-message").last();
+      await expect(assistantMessage).toContainText("walking through", { timeout: 30_000 });
+
+      const activeBlock = assistantMessage.locator(":scope > *").last();
+      const initialText = (await activeBlock.textContent()) ?? "";
+      const activeBlockHandle = await activeBlock.elementHandle();
+      if (!activeBlockHandle) {
+        throw new Error("Expected the active assistant message to contain a block");
+      }
+      const markdownRoot = await activeBlock.locator(":scope > *").first().elementHandle();
+      if (!markdownRoot) {
+        throw new Error("Expected the active assistant block to contain a Markdown root");
+      }
+
+      await page.evaluate(installMarkdownRootObserver, activeBlockHandle);
+
+      await expect
+        .poll(async () => ((await activeBlock.textContent()) ?? "").length)
+        .toBeGreaterThan(initialText.length + 80);
+
+      const settled = await page.evaluate(settleMarkdownRootObserver);
+      const rootState = await page.evaluate((root) => {
+        const messages = document.querySelectorAll('[data-testid="assistant-message"]');
+        const message = messages.item(messages.length - 1);
+        const block = message?.lastElementChild;
+        return { connected: root.isConnected, sameRoot: block?.firstElementChild === root };
+      }, markdownRoot);
+      const evidence = { ...settled, ...rootState };
+
+      await testInfo.attach("markdown-root-stability", {
+        body: JSON.stringify(evidence, null, 2),
+        contentType: "application/json",
+      });
+      expect(evidence.connected).toBe(true);
+      expect(evidence.sameRoot).toBe(true);
+      expect(
+        evidence.replacedElements,
+        `Streaming Markdown replaced mounted descendants: ${JSON.stringify(evidence)}`,
+      ).toBe(0);
+      expect(
+        evidence.restartedFades,
+        `Streaming Markdown re-created a fading word with a new start time: ${JSON.stringify(evidence)}`,
+      ).toBe(0);
     } finally {
       await agent.cleanup();
     }
