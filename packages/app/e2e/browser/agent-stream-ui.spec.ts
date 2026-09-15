@@ -6,6 +6,7 @@ import {
   expectRunningAgentChrome,
   expectTurnCopyButton,
   expectScrollFollowsNewContent,
+  observeCompletedMarkdownBlock,
 } from "../support/helpers/agent-stream";
 import {
   expectScrollStaysFixed,
@@ -48,7 +49,9 @@ test.describe("Agent stream UI", () => {
     }
   });
 
-  test("auto-scroll sticks to bottom across token bursts", async ({ page }) => {
+  test("auto-scroll follows token bursts while streamed Markdown grows in place", async ({
+    page,
+  }) => {
     test.setTimeout(120_000);
     const agent = await startRunningMockAgent(page, {
       prefix: "stream-scroll-",
@@ -56,8 +59,18 @@ test.describe("Agent stream UI", () => {
       prompt: "Stream for auto-scroll test.",
     });
     try {
-      await awaitAssistantMessage(page);
+      await awaitAssistantMessage(page, "walking through");
       await expectScrollFollowsNewContent(page);
+
+      await test.step("a completed block stays mounted while later blocks stream", async () => {
+        await awaitAssistantMessage(page, "Now I have a clearer picture");
+        const intro = page
+          .getByTestId("assistant-message")
+          .filter({ hasText: "walking through" })
+          .first();
+        const block = await observeCompletedMarkdownBlock(page, intro);
+        await block.expectLaterStreamKeepsMounted();
+      });
     } finally {
       await agent.cleanup();
     }

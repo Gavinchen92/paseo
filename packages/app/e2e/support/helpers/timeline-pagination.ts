@@ -15,6 +15,8 @@ export { holdDaemonHydration };
 
 interface LongTimelineAgentOptions {
   turns: number;
+  /** Live turns stream for ten seconds unless a test needs one that outlasts it. */
+  liveTurns?: "ten-second-stream" | "thirty-minute-stream";
 }
 
 export interface LongTimelineAgent extends MockAgentWorkspace {
@@ -23,6 +25,8 @@ export interface LongTimelineAgent extends MockAgentWorkspace {
   firstOlderPagePrompt: string;
   initialTailAnchorPrompt: string;
   initialTailOldestPrompt: string;
+  /** The newest prompt on the first older page, adjacent to the initial tail. */
+  newestOlderPagePrompt: string;
   oldestPrompt: string;
   newestPrompt: string;
 }
@@ -71,7 +75,7 @@ export async function seedLongMockAgentTimeline(
   const agent = await seedMockAgentWorkspace({
     repoPrefix: "timeline-pagination-",
     title: "Timeline pagination regression",
-    model: "ten-second-stream",
+    model: options.liveTurns ?? "ten-second-stream",
   });
 
   for (let index = 0; index < options.turns; index += 1) {
@@ -85,6 +89,7 @@ export async function seedLongMockAgentTimeline(
     firstOlderPagePrompt: promptForTurn(Math.max(0, options.turns - 40)),
     initialTailAnchorPrompt: promptForTurn(Math.max(0, options.turns - 5)),
     initialTailOldestPrompt: promptForTurn(Math.max(0, options.turns - 20)),
+    newestOlderPagePrompt: promptForTurn(Math.max(0, options.turns - 21)),
     oldestPrompt: promptForTurn(0),
     newestPrompt: promptForTurn(options.turns - 1),
   };

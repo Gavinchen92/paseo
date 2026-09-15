@@ -134,7 +134,8 @@ test.describe("Agent timeline pagination", () => {
 
   test("finishes loading an older page while live output continues", async ({ page }) => {
     test.setTimeout(120_000);
-    const agent = await seedLongMockAgentTimeline({ turns: 40 });
+    // The live turn streams for thirty minutes, so it is still running at every assertion.
+    const agent = await seedLongMockAgentTimeline({ turns: 40, liveTurns: "thirty-minute-stream" });
     try {
       const history = await holdOlderHistoryPages(page, agent);
       await openAgentTimeline(page, agent);
@@ -146,10 +147,11 @@ test.describe("Agent timeline pagination", () => {
         agent.agentId,
         (snapshot) => snapshot.status === "running",
       );
+      const timeline = page.locator('[data-testid="agent-chat-scroll"]:visible').first();
+      await expect(timeline.getByText("walking through").first()).toBeAttached();
       history.releasePage(1);
 
-      await userScrollsTimelineToHistoryStart(page);
-      await expectTimelinePromptVisible(page, agent.oldestPrompt);
+      await expect(timeline.getByText(agent.newestOlderPagePrompt, { exact: true })).toBeAttached();
       await expect(page.getByTestId("load-older-history-spinner")).toBeHidden({ timeout: 5_000 });
       const running = await agent.client.fetchAgents({ scope: "active" });
       expect(running.entries.find((entry) => entry.agent.id === agent.agentId)?.agent.status).toBe(

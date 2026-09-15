@@ -980,11 +980,21 @@ test("canvas diff stays sharp while its workspace pane is resized", async ({ pag
     .toBe(true);
 });
 
-test("changes diff applies code size changes to gutter and code typography", async ({ page }) => {
+test("changes diff waits for configured fonts, then applies code typography changes", async ({
+  page,
+}) => {
   const workspace = await createWorkspaceWithMountedTabDiff();
   await useCodeFont(page, 12);
   await useUnwrappedDiffLines(page);
-  await openWorkspaceChanges(page, workspace);
+  await holdBrowserFontLoads(page);
+  await navigateToWorkspaceChanges(page, workspace);
+
+  await test.step("commit no geometry before the configured fonts are ready", async () => {
+    await expect(page.getByTestId("git-diff-canvas")).toBeVisible();
+    await expect(page.getByTestId("diff-file-0-body")).toHaveCount(0);
+    await releaseBrowserFontLoads(page);
+    await expectExpandedMountedTabDiff(page);
+  });
   const before = await readDiffTypographyGeometry(page);
 
   await changeCodeTypographyFromSettings(page, {
@@ -1374,6 +1384,41 @@ async function setOpenChangesPresentation(
   }
 }
 
+/** Holds every font load in the document until released; later loads pass through. */
+async function holdBrowserFontLoads(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const fontSet = document.fonts;
+    const originalLoad = fontSet.load.bind(fontSet);
+    const pending: Array<() => void> = [];
+    let released = false;
+    Object.defineProperty(fontSet, "load", {
+      configurable: true,
+      value(font: string, text?: string) {
+        if (released) return originalLoad(font, text);
+        return new Promise<FontFace[]>((resolve, reject) => {
+          pending.push(() => {
+            originalLoad(font, text).then(resolve, reject);
+          });
+        });
+      },
+    });
+    Object.assign(window, {
+      __releasePaseoDiffFontLoads() {
+        released = true;
+        for (const release of pending.splice(0)) release();
+      },
+    });
+  });
+}
+
+async function releaseBrowserFontLoads(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    (
+      window as typeof window & { __releasePaseoDiffFontLoads: () => void }
+    ).__releasePaseoDiffFontLoads();
+  });
+}
+
 async function expectDiffCodeFontSize(page: Page, fontSize: number): Promise<void> {
   const canvas = page.getByTestId("git-diff-canvas");
   await expect
@@ -1609,12 +1654,16 @@ async function createWorkspaceWithStickyTransitionDiff(): Promise<DirtyWorkspace
 }
 
 async function openWorkspaceChanges(page: Page, workspace: DirtyWorkspace): Promise<void> {
+  await navigateToWorkspaceChanges(page, workspace);
+  await expectExpandedMountedTabDiff(page);
+}
+
+async function navigateToWorkspaceChanges(page: Page, workspace: DirtyWorkspace): Promise<void> {
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto(buildHostWorkspaceRoute(getServerId(), workspace.id));
   await waitForWorkspaceTabsVisible(page);
   await page.getByTestId("workspace-explorer-toggle").first().click();
   await openChangesInVisibleExplorer(page);
-  await expectExpandedMountedTabDiff(page);
 }
 
 /** The Explorer overlay a phone-sized viewport shows, with its Changes tab selected. */
